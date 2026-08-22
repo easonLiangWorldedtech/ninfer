@@ -396,7 +396,9 @@ std::string format_request_done(const RequestLogContext& context,
     if (memory != nullptr && memory->cold_tier_arena_count > 0) {
         out << " cold=parks=" << memory->cold_tier_parks << " restores=" << memory->cold_tier_restores
             << " failures=" << (memory->cold_tier_park_failures + memory->cold_tier_restore_failures)
-            << " entries=" << memory->cold_tier_entry_count;
+            << " entries=" << memory->cold_tier_entry_count << " evictions=" << memory->cold_tier_evictions
+            << " used=" << std::fixed << std::setprecision(1)
+            << (static_cast<double>(memory->cold_tier_used_bytes) / (1024.0 * 1024.0 * 1024.0)) << "GiB";
     }
     out << " ttft=" << std::fixed
         << std::setprecision(0) << ttft_ms << "ms"

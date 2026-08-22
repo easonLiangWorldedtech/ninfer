@@ -481,8 +481,10 @@ admission 的完整 entitlement；不为 `H` pin matching lane/checkpoint。Incu
 可以把其完整 active entitlement 视为可释放。不可驱逐的 engine-fixed occupancy 属于 `K` 之外的 baseline，
 不能伪装成 donor release。
 
-启用 cold state tier 时，驱逐动作可以附带一次 best-effort 换出：被驱逐 lane 的完整 state image 先序列化
-进 secondary device 的 VRAM arena，随后才释放 lane。换出失败不改变驱逐语义（lane 照常清空，image 丢弃）。
+启用 cold state tier 时，retained resident 失去 lane 的动作都可以附带一次 best-effort 换出：无论是
+admission 驱逐，还是同一 lane 上的 in-place full reset（另一个 conversation 在该 lane 上全新起步，
+无条件清掉既有 retained state），lane 释放前都先把完整 state image 序列化进 secondary device 的
+VRAM arena。换出失败不改变原有语义（驱逐照常清空 lane，reset 照常重建，image 丢弃）。
 arena 自身按 LRU 回收 image；被 arena 回收的 image 只是 prefix reuse 候选消失，对任何 admission 可行性
 判断没有影响——cold tier 既不增加也不减少 §5.2 的 entitlement 账目，它只改变驱逐后同一 prefix 再次
 admission 时的 uncached prompt work 预期（§5.5 的 service projection 可以按此保守缩短）。
@@ -753,8 +755,12 @@ retained entries。Planner 不复制或迁移 retained physical state，而是�
 只有在 slot/lane 和完整 entitlement 都已满足后才能 claim cache ownership。
 
 启用 cold state tier 后，prefix lookup 多一个候选来源：parked image 表。Admission 在常规 free-lane
-reuse 判断之前，先查询与当前 prompt 的完整 ledger prefix 匹配的 parked entry（最长匹配优先，同长取最近
-parked）。命中时的 restore 分三个阶段升级完成，且任何一步失败都退化为常规 admission，不产生新的请求结果：
+reuse 判断之前，先查询 parked entry 的稳定 prefix 与当前 prompt 的匹配（最长匹配优先，同长取最近
+parked）。一个 entry 有两级稳定 prefix：完整 ledger（prompt 完整回显 parked reply，命中后 planner
+按 execution frontier append），或 turn checkpoint（下一个 request 重新渲染最终 turn——generation
+prompt 与 thinking control 使 parked ledger 尾部分歧——命中后 planner 恢复 checkpoint 并只重做被
+重新渲染的尾部，与 resident lane 的 reuse 语义完全一致）。命中时的 restore 分三个阶段升级完成，且任何
+一步失败都退化为常规 admission，不产生新的请求结果：
 
 1. Swap-into-empty-lane：把 image 换回一个 slot-free 且无 retained state 的 lane，重建全新
    `SequenceState`（fresh `reserve_sequence_kv` + `materialize_sequence_kv` 分配与 parked page 集同形的
@@ -776,8 +782,8 @@ request 都进入相同 prefill/decode schedule 和 compact batch formation。
 
 ### 6.5 Cross-GPU cold state tier
 
-Cold state tier 把 §5.4 驱逐产生的 state image 从"丢弃"变成"换出"。它是本文 lane-affine 与 no-move
-规则下的受控存储层，不是第二个 execution target：
+Cold state tier 把 §5.4 换出点（admission 驱逐与 in-place full reset）产生的 state image 从"丢弃"
+变成"换出"。它是本文 lane-affine 与 no-move 规则下的受控存储层，不是第二个 execution target：
 
 - **Ownership**：image 由 target 的 `ColdStateCache` 持有，底层 arena 由 `core` 的 `ColdTier` 持有。
   Arena 只分配/回收 VRAM slab 与 host-side metadata；它不理解 token、ledger 或 frontier。
@@ -791,6 +797,9 @@ Cold state tier 把 §5.4 驱逐产生的 state image 从"丢弃"变成"换出"�
   到驱逐前语义；cold tier 不引入新的请求失败模式。
 - **Invariants**：secondary device 无 model execution、无 CUDA Graph、无权重；image 不含 active request
   state；park/restore 的 span 集合对同一 lane state 逐字节一致；restore 只写入空 lane。
+- **Park contract**：park 只接受 terminal frontier 契约——`ledger.size() == ledger_frontier ==
+  execution_frontier + 1`（ledger 末位只承载 tail hidden，KV 已 trim 到 executed frontier），且 MTP
+  backend 满足 `mtp_kv_valid + 1 >= execution_frontier`；违反任一条件即放弃 park。
 
 ---
 

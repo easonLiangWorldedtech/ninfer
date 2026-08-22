@@ -486,6 +486,18 @@ runtime::PrefillStepResult ProgramImplCore::start_prefill_lane(std::uint32_t lan
                             : 0U,
                         capacity - prompt_tokens > 0 ? capacity - prompt_tokens - 1 : 0U})
             : 0U;
+    // Cross-GPU cold tier: a FullReset clears the lane's resident state
+    // unconditionally (KV bundle, GDN slots, ledger), so a retained resident
+    // on this lane is destroyed by in-place replacement — the C>1 eviction
+    // path that never goes through explicit eviction. Swap the resident
+    // image into the secondary-device arenas first, so a later request
+    // presenting the same prefix restores it instead of re-prefilling.
+    // Best-effort: a park failure falls through to the normal reset.
+    if (request_plan.reuse == ReusePath::FullReset && sequence.retained && cold_cache) {
+        try {
+            (void)cold_cache->park_lane(*this, lane);
+        } catch (...) { (void)false; }
+    }
     request.lifecycle = Lifecycle::Empty;
     sequence.retained = false;
     try {

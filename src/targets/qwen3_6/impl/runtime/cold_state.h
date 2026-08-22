@@ -91,9 +91,13 @@ public:
                 ++park_failures_;
                 return false;
             }
-            const std::size_t prefix_count = sequence.ledger.size();
-            if (prefix_count != sequence.execution_frontier ||
-                prefix_count != sequence.ledger_frontier) {
+            // Terminal frontier contract: the ledger holds the complete
+            // prefix including the tail-hidden token, so it runs exactly one
+            // token ahead of the executed KV frontier, and the KV bundle is
+            // trimmed to that executed prefix.
+            if (sequence.ledger.size() != sequence.ledger_frontier ||
+                sequence.ledger_frontier != sequence.execution_frontier + 1 ||
+                sequence.text_kv_valid != sequence.execution_frontier) {
                 ++park_failures_;
                 return false;
             }
@@ -163,21 +167,40 @@ public:
         }
     }
 
-    // Id of the parked entry whose full ledger prefix-matches the prompt, or
-    // 0. Longest match wins; ties resolve to the most recently parked entry.
+    // Id of the parked entry whose stable prefix matches the prompt, or 0.
+    // An entry matches at the full ledger (the prompt re-echoes the parked
+    // reply) or at the turn checkpoint (the next request re-renders the final
+    // turn and diverges the ledger tail). Longest match wins; ties resolve to
+    // the most recently parked entry.
     [[nodiscard]] std::uint64_t find_parked(const PreparedPromptData& prompt) const {
         std::lock_guard lock(mutex_);
         if (!prompt.identity.reusable || prompt.token_ids.empty()) { return 0; }
         const Entry* best = nullptr;
+        std::size_t best_match = 0;
         for (const Entry& entry : entries_) {
             if (entry.ledger.empty() || entry.ledger.size() > prompt.token_ids.size()) { continue; }
-            if (!qwen3_6::detail::prefix_matches(prompt, entry.ledger, entry.prefix_identity,
-                                                 entry.ledger.size())) {
-                continue;
+            // Two stable prefixes, longest match wins:
+            // - the full ledger, when the prompt re-echoes the parked reply;
+            // the planner then appends at the execution frontier.
+            // - the turn checkpoint, when the next request re-renders the final
+            //   turn (generation prompt / thinking control) and diverges the
+            //   ledger tail; the checkpoint is the last user-turn boundary the
+            //   planner restores and re-prefills from, as on a resident lane.
+            std::size_t match_len = 0;
+            if (qwen3_6::detail::prefix_matches(prompt, entry.ledger, entry.prefix_identity,
+                                                entry.ledger.size())) {
+                match_len = entry.ledger.size();
+            } else if (entry.rewrite_checkpoint.valid && entry.rewrite_checkpoint.frontier > 0 &&
+                       entry.rewrite_checkpoint.frontier < entry.ledger.size() &&
+                       qwen3_6::detail::prefix_matches(prompt, entry.ledger, entry.prefix_identity,
+                                                       entry.rewrite_checkpoint.frontier)) {
+                match_len = entry.rewrite_checkpoint.frontier;
             }
-            if (best == nullptr || entry.ledger.size() > best->ledger.size() ||
-                (entry.ledger.size() == best->ledger.size() && entry.parked_at > best->parked_at)) {
-                best = &entry;
+            if (match_len == 0) { continue; }
+            if (best == nullptr || match_len > best_match ||
+                (match_len == best_match && entry.parked_at > best->parked_at)) {
+                best       = &entry;
+                best_match = match_len;
             }
         }
         return best != nullptr ? best->id : 0;

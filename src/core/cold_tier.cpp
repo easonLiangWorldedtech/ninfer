@@ -283,13 +283,29 @@ void staged_span_transfer(int src_device, cudaStream_t src_stream,
         void* dst          = nullptr;
     };
 
+    // Piece boundaries follow the finer of the two span layouts. Park packs
+    // many source spans into one arena region and restore unpacks one arena
+    // region into many destination spans, so the two sides never imply
+    // parallel span indices: walk both lists and split at every boundary.
     std::vector<Piece> pieces;
     {
-        std::size_t offset = 0;
-        for (std::size_t i = 0; i < src_sizes.size(); ++i) {
+        std::size_t offset    = 0;
+        std::size_t src_index = 0, dst_index = 0;
+        std::size_t src_off   = 0, dst_off  = 0;
+        while (offset < total) {
+            const std::size_t length = std::min(
+                {src_sizes[src_index] - src_off, dst_sizes[dst_index] - dst_off, total - offset});
             pieces.push_back(Piece{
-                .begin = offset, .length = src_sizes[i], .src = src_ptrs[i], .dst = dst_ptrs[i]});
-            offset += src_sizes[i];
+                .begin  = offset,
+                .length = length,
+                .src    = static_cast<const char*>(src_ptrs[src_index]) + src_off,
+                .dst    = static_cast<char*>(dst_ptrs[dst_index]) + dst_off,
+            });
+            offset  += length;
+            src_off += length;
+            dst_off += length;
+            if (src_off == src_sizes[src_index]) { ++src_index; src_off = 0; }
+            if (dst_off == dst_sizes[dst_index]) { ++dst_index; dst_off = 0; }
         }
     }
 

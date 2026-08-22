@@ -520,14 +520,21 @@ Run `./build/apps/ninfer-serve --help` for the exact option contract.
 ## Cross-GPU cold tier
 
 With more than one GPU present, the server keeps evicted retained prefixes in a VRAM cold
-tier on the secondary devices instead of dropping them. When a retained lane is evicted for
-admission, its serialized state image (paged KV pages, MTP backend KV, GDN slots, tail and
-rewrite-checkpoint hidden rows) is swapped through pinned host memory into LRU arenas on the
-secondary devices. When a later request presents the same prefix, the image is swapped back
-into a freshly materialized allocation before lane selection, so the request resumes from the
-parked frontier through the normal prefix-reuse path instead of re-prefilling. Under pool
-pressure the admission pass parks other slot-free retained residents into the tier first, so
-multiple concurrent conversations swap state rather than evicting each other to a full reset.
+tier on the secondary devices instead of dropping them. A retained resident is parked into the
+tier whenever its lane is taken from it: either by an admission eviction, or by an in-place
+full reset on the same lane when a different conversation starts there. Its serialized state
+image (paged KV pages, MTP backend KV, GDN slots, tail and rewrite-checkpoint hidden rows) is
+swapped through pinned host memory into LRU arenas on the secondary devices. When a later
+request presents the same prefix, the image is swapped back into a freshly materialized
+allocation before lane selection, so the request resumes through the normal prefix-reuse path
+instead of re-prefilling. A parked entry matches a prompt at the full ledger when the prompt
+re-echoes the parked reply (the request appends at the execution frontier), or at the turn
+checkpoint when the next request re-renders the final turn — the generation prompt and
+thinking control diverge the parked ledger's tail — in which case the planner restores the
+checkpoint and re-prefills only the re-rendered tail, exactly as on a resident lane. Under
+pool pressure the admission pass parks other slot-free retained residents into the tier
+first, so multiple concurrent conversations swap state rather than evicting each other to a
+full reset.
 
 The tier is best-effort: a missing secondary device, an oversize image, or a failed transfer
 falls back to the normal admission path without failing the request. It changes neither the
@@ -535,7 +542,11 @@ FIFO admission order nor the reuse paths a request can take. The request log rec
 `cold_tier_parks`, `cold_tier_restores`, `cold_tier_evictions`, `cold_tier_park_failures`,
 `cold_tier_restore_failures`, `cold_tier_capacity_bytes`, and arena occupancy. Each request-done
 stderr line appends the cumulative `cold=parks=… restores=… failures=… entries=…` counters while
-the tier is active, and startup logs the arena count, total capacity, and staging buffer size.
+the tier is active — including `evictions=…` (LRU entries dropped for capacity) and
+`used=…GiB` (current arena occupancy) — and startup logs the arena count, total capacity, and
+staging buffer size. A growing `evictions` with no matching `restores` means the workload holds
+more parked frontiers than the arenas can retain, so the least-recently-used conversations age
+out before they return.
 
 ## Structured request log
 
