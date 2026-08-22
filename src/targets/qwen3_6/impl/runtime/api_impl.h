@@ -232,13 +232,16 @@ template <>
 Program<Variant>::ColdCacheStats Program<Variant>::cold_cache_stats() const {
     const detail::NINFER_QWEN36_RUNTIME_NS::ColdCacheStats stats = impl_->cold_cache_stats();
     return ColdCacheStats{
-        .parks          = stats.parks,
-        .restores       = stats.restores,
-        .park_failures  = stats.park_failures,
-        .entry_count    = stats.tier.entry_count,
-        .arena_count    = stats.tier.arena_count,
-        .used_bytes     = stats.tier.used_bytes,
-        .tier_evictions = stats.tier.evictions,
+        .parks            = stats.parks,
+        .restores         = stats.restores,
+        .park_failures    = stats.park_failures,
+        .restore_failures = stats.restore_failures,
+        .entry_count      = stats.tier.entry_count,
+        .arena_count      = stats.tier.arena_count,
+        .capacity_bytes   = stats.tier.capacity_bytes,
+        .used_bytes       = stats.tier.used_bytes,
+        .tier_evictions   = stats.tier.evictions,
+        .rejected_oversize = stats.tier.rejected_oversize,
     };
 }
 

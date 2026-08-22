@@ -184,13 +184,16 @@ public:
     void restore_parked_prefix(std::uint64_t entry_id, std::uint32_t lane);
 
     struct ColdCacheStats {
-        std::uint64_t parks         = 0;
-        std::uint64_t restores      = 0;
-        std::uint64_t park_failures = 0;
-        std::size_t entry_count     = 0;
-        std::size_t arena_count     = 0;
-        std::size_t used_bytes      = 0;
-        std::size_t tier_evictions  = 0;
+        std::uint64_t parks            = 0;
+        std::uint64_t restores         = 0;
+        std::uint64_t park_failures    = 0;
+        std::uint64_t restore_failures = 0;
+        std::size_t entry_count        = 0;
+        std::size_t arena_count        = 0;
+        std::size_t capacity_bytes     = 0;
+        std::size_t used_bytes         = 0;
+        std::size_t tier_evictions     = 0;
+        std::size_t rejected_oversize  = 0;
     };
 
     [[nodiscard]] ColdCacheStats cold_cache_stats() const;

@@ -42,6 +42,7 @@ public:
     struct Stats {
         std::size_t arena_count       = 0;
         std::size_t entry_count       = 0;
+        std::size_t capacity_bytes    = 0;
         std::size_t used_bytes        = 0;
         std::size_t evictions         = 0;
         std::size_t rejected_oversize = 0;

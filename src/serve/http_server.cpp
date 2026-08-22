@@ -155,7 +155,8 @@ void HttpServer::log_request_rejected(const RequestRejectionLogContext& context)
 
 void HttpServer::log_request_done(const RequestLogContext& context,
                                   const GenerationOutcome& outcome) {
-    log_line(format_request_done(context, outcome));
+    const ninfer::MemorySummary memory = service_->memory_summary();
+    log_line(format_request_done(context, outcome, &memory));
     request_jsonl_.write_request_done(context, outcome);
 }
 

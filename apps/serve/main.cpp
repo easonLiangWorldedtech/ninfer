@@ -92,6 +92,13 @@ int main(int argc, char** argv) {
                      << " media-live=" << format_bytes(media.live_capacity_bytes);
         }
         ninfer::serve::write_console_log(ninfer::serve::ConsoleLogLevel::Info, capacity.str());
+        if (memory.cold_tier_arena_count > 0) {
+            std::ostringstream cold;
+            cold << "cold tier: arenas=" << memory.cold_tier_arena_count
+                 << " capacity=" << format_bytes(memory.cold_tier_capacity_bytes)
+                 << " staging=" << format_bytes(options.cold_tier.staging_bytes);
+            ninfer::serve::write_console_log(ninfer::serve::ConsoleLogLevel::Info, cold.str());
+        }
 
         ninfer::serve::write_console_log(ninfer::serve::ConsoleLogLevel::Info, "warming up...");
         service.warmup();

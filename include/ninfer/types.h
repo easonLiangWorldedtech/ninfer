@@ -445,12 +445,15 @@ struct MemorySummary {
     std::size_t cuda_graph_observed_bytes         = 0;
     std::size_t kv_payload_bytes                  = 0;
     // Cross-GPU cold state tier occupancy and lifetime counters.
-    std::uint32_t cold_tier_entry_count = 0;
-    std::size_t cold_tier_arena_count   = 0;
-    std::size_t cold_tier_used_bytes    = 0;
-    std::uint64_t cold_tier_parks       = 0;
-    std::uint64_t cold_tier_restores    = 0;
-    std::uint64_t cold_tier_evictions   = 0;
+    std::uint32_t cold_tier_entry_count        = 0;
+    std::size_t cold_tier_arena_count          = 0;
+    std::size_t cold_tier_capacity_bytes       = 0;
+    std::size_t cold_tier_used_bytes           = 0;
+    std::uint64_t cold_tier_parks              = 0;
+    std::uint64_t cold_tier_restores           = 0;
+    std::uint64_t cold_tier_evictions          = 0;
+    std::uint64_t cold_tier_park_failures      = 0;
+    std::uint64_t cold_tier_restore_failures   = 0;
 };
 
 // Monotonic execution counters plus one boundary-consistent scheduler snapshot. Consumers derive

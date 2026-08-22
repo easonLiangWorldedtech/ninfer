@@ -37,9 +37,14 @@ namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
 // top-level type so ProgramImplCore can name it without the complete
 // ColdStateCache definition.
 struct ColdCacheStats {
-    std::uint64_t parks         = 0;
-    std::uint64_t restores      = 0;
-    std::uint64_t park_failures = 0;
+    std::uint64_t parks            = 0;
+    std::uint64_t restores         = 0;
+    // Every non-park outcome of park_lane: failed preconditions, arena
+    // allocation rejection, or transfer error. Best-effort by design, but the
+    // split between this counter and tier.rejected_oversize says whether the
+    // lane was not parkable or the image did not fit.
+    std::uint64_t park_failures    = 0;
+    std::uint64_t restore_failures = 0;
     ColdTier::Stats tier;
 };
 
@@ -72,25 +77,36 @@ public:
     bool park_lane(const ProgramImplCore& program, std::uint32_t lane) {
         try {
             std::lock_guard lock(mutex_);
-            if (lane >= program.max_concurrency) { return false; }
+            if (lane >= program.max_concurrency) {
+                ++park_failures_;
+                return false;
+            }
             const SequenceState& sequence = program.sequences[lane];
             if (!sequence.retained || !sequence.kv || sequence.execution_frontier == 0 ||
                 sequence.ledger.empty() || !sequence.tail_hidden_valid) {
+                ++park_failures_;
                 return false;
             }
-            if (program.speculative_backend == SpeculativeBackend::DFlash) { return false; }
+            if (program.speculative_backend == SpeculativeBackend::DFlash) {
+                ++park_failures_;
+                return false;
+            }
             const std::size_t prefix_count = sequence.ledger.size();
             if (prefix_count != sequence.execution_frontier ||
                 prefix_count != sequence.ledger_frontier) {
+                ++park_failures_;
                 return false;
             }
             if (program.speculative_backend == SpeculativeBackend::Mtp &&
                 (!sequence.kv->backend || sequence.kv->backend->page_ids().empty() ||
                  sequence.mtp_kv_valid + 1 < sequence.execution_frontier)) {
+                ++park_failures_;
                 return false;
             }
 
-            const std::vector<ImageSpan> spans = image_spans_for_lane(program, lane);
+            const std::vector<ImageSpan> spans =
+                image_spans_for_lane(program, lane, sequence.rewrite_checkpoint.valid,
+                                     sequence.tail_hidden_valid);
             const SpanSet source               = to_span_set(spans);
 
             Entry entry;
@@ -112,7 +128,10 @@ public:
 
             std::vector<std::uint64_t> evicted_ids;
             std::optional<ColdTier::Handle> handle = tier_.allocate(source.total, &evicted_ids);
-            if (!handle) { return false; }
+            if (!handle) {
+                ++park_failures_;
+                return false;
+            }
             for (std::uint64_t evicted : evicted_ids) {
                 const auto it = std::find_if(entries_.begin(), entries_.end(),
                                              [evicted](const Entry& e) { return e.id == evicted; });
@@ -196,7 +215,9 @@ public:
             sequence.kv.reset();
             throw std::logic_error("cold cache restore allocation does not match the parked image");
         }
-        const std::vector<ImageSpan> spans = image_spans_for_lane(program, lane);
+        const std::vector<ImageSpan> spans =
+            image_spans_for_lane(program, lane, parked.rewrite_checkpoint.valid,
+                                 parked.tail_hidden_valid);
         SpanSet destination                = to_span_set(spans);
         if (destination.total != parked.image_bytes) {
             sequence.kv.reset();
@@ -240,13 +261,19 @@ public:
         ++restores_;
     }
 
+    void count_restore_failure() {
+        std::lock_guard lock(mutex_);
+        ++restore_failures_;
+    }
+
     [[nodiscard]] ColdCacheStats stats() const {
         std::lock_guard lock(mutex_);
         return ColdCacheStats{
-            .parks         = parks_,
-            .restores      = restores_,
-            .park_failures = park_failures_,
-            .tier          = tier_.stats(),
+            .parks            = parks_,
+            .restores         = restores_,
+            .park_failures    = park_failures_,
+            .restore_failures = restore_failures_,
+            .tier             = tier_.stats(),
         };
     }
 
@@ -262,11 +289,14 @@ private:
         std::size_t total = 0;
     };
 
-    // Per-plane, per-page device slices of the lane's mapped state. The span
-    // set is byte-identical between park and restore for the same lane state
-    // (same GDN-slot and hidden-row conditions), so the image round-trips.
+    // Per-plane, per-page device slices of the lane's mapped state. The
+    // checkpoint-slot and hidden-row conditions are passed explicitly because
+    // restore evaluates them against the PARKED entry, not the fresh
+    // SequenceState being rebuilt; park and restore must agree byte for byte.
     std::vector<ImageSpan> image_spans_for_lane(const ProgramImplCore& program,
-                                                std::uint32_t lane) const {
+                                                std::uint32_t lane,
+                                                bool include_checkpoint_slot,
+                                                bool include_tail_hidden) const {
         const SequenceState& sequence = program.sequences[lane];
         std::vector<ImageSpan> spans;
         if (!sequence.kv) { throw std::logic_error("cold cache lane has no KV allocation bundle"); }
@@ -302,13 +332,13 @@ private:
             }
         };
         append_slot(LinearStateSlots::current_state_slot(lane, program.max_concurrency));
-        if (sequence.rewrite_checkpoint.valid) {
+        if (include_checkpoint_slot) {
             append_slot(LinearStateSlots::rewrite_checkpoint_state_slot(lane, program.max_concurrency));
         }
-        if (sequence.tail_hidden_valid) {
+        if (include_tail_hidden) {
             spans.push_back({sequence.tail_hidden.data, sequence.tail_hidden.bytes()});
         }
-        if (sequence.rewrite_checkpoint.valid) {
+        if (include_checkpoint_slot) {
             spans.push_back(
                 {sequence.rewrite_checkpoint_hidden.data, sequence.rewrite_checkpoint_hidden.bytes()});
         }
@@ -337,9 +367,10 @@ private:
     mutable std::mutex mutex_;
     ColdTier tier_;
     std::vector<Entry> entries_;
-    std::uint64_t parks_         = 0;
-    std::uint64_t restores_      = 0;
-    std::uint64_t park_failures_ = 0;
+    std::uint64_t parks_            = 0;
+    std::uint64_t restores_         = 0;
+    std::uint64_t park_failures_    = 0;
+    std::uint64_t restore_failures_ = 0;
 };
 
 } // namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS

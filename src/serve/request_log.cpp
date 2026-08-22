@@ -376,7 +376,8 @@ std::string format_request_rejected(const RequestRejectionLogContext& context) {
 }
 
 std::string format_request_done(const RequestLogContext& context,
-                                const GenerationOutcome& outcome) {
+                                const GenerationOutcome& outcome,
+                                const ninfer::MemorySummary* memory) {
     const GenerationMetrics& metrics = outcome.metrics;
     const double ttft_ms             = metrics.ttft_seconds * 1000.0;
     // Prefill emits the first token; the remaining (gen - 1) come from decode.
@@ -391,7 +392,13 @@ std::string format_request_done(const RequestLogContext& context,
     if (!outcome.tool_calls.empty()) { out << " tool_calls=" << outcome.tool_calls.size(); }
     out << " prompt=" << outcome.prompt_tokens << " gen=" << outcome.completion_tokens
         << " cache=" << metrics.prefix_cache_hit_tokens
-        << " reuse=" << prefix_reuse_path_name(metrics.prefix_reuse_path) << " ttft=" << std::fixed
+        << " reuse=" << prefix_reuse_path_name(metrics.prefix_reuse_path);
+    if (memory != nullptr && memory->cold_tier_arena_count > 0) {
+        out << " cold=parks=" << memory->cold_tier_parks << " restores=" << memory->cold_tier_restores
+            << " failures=" << (memory->cold_tier_park_failures + memory->cold_tier_restore_failures)
+            << " entries=" << memory->cold_tier_entry_count;
+    }
+    out << " ttft=" << std::fixed
         << std::setprecision(0) << ttft_ms << "ms"
         << " prefill=" << rate(computed_prefill_tokens, metrics.prefill_seconds)
         << " decode=" << rate(decode_tokens, metrics.decode_seconds)
@@ -515,7 +522,10 @@ std::string format_server_start_json(
              {"cold_tier_used_bytes", memory.cold_tier_used_bytes},
              {"cold_tier_parks", memory.cold_tier_parks},
              {"cold_tier_restores", memory.cold_tier_restores},
-             {"cold_tier_evictions", memory.cold_tier_evictions}};
+             {"cold_tier_evictions", memory.cold_tier_evictions},
+             {"cold_tier_capacity_bytes", memory.cold_tier_capacity_bytes},
+             {"cold_tier_park_failures", memory.cold_tier_park_failures},
+             {"cold_tier_restore_failures", memory.cold_tier_restore_failures}};
     record["environment"] =
         Json{{"device", environment.device},
              {"gpu_name", environment.gpu_name},

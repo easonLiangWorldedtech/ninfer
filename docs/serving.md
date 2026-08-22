@@ -532,7 +532,10 @@ multiple concurrent conversations swap state rather than evicting each other to 
 The tier is best-effort: a missing secondary device, an oversize image, or a failed transfer
 falls back to the normal admission path without failing the request. It changes neither the
 FIFO admission order nor the reuse paths a request can take. The request log records
-`cold_tier_parks`, `cold_tier_restores`, `cold_tier_evictions`, and arena occupancy.
+`cold_tier_parks`, `cold_tier_restores`, `cold_tier_evictions`, `cold_tier_park_failures`,
+`cold_tier_restore_failures`, `cold_tier_capacity_bytes`, and arena occupancy. Each request-done
+stderr line appends the cumulative `cold=parks=… restores=… failures=… entries=…` counters while
+the tier is active, and startup logs the arena count, total capacity, and staging buffer size.
 
 ## Structured request log
 
@@ -546,7 +549,7 @@ is also rejected if it resolves to the model artifact.
   --request-log-jsonl profiles/bench/run/server.requests.jsonl
 ```
 
-Every line is one `ninfer_serve_request_log` schema-v10 JSON object. All events carry
+Every line is one `ninfer_serve_request_log` schema-v12 JSON object. All events carry
 `timestamp_unix_ms` and a process-unique `server_instance_id`; request IDs are monotonic only within
 that server instance. Successful request-start records include request-scoped acquisition,
 media-preprocessing wall/work, tokenizer, cache hit/miss/single-flight, and payload-size fields;

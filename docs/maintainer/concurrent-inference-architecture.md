@@ -754,15 +754,17 @@ retained entries。Planner 不复制或迁移 retained physical state，而是�
 
 启用 cold state tier 后，prefix lookup 多一个候选来源：parked image 表。Admission 在常规 free-lane
 reuse 判断之前，先查询与当前 prompt 的完整 ledger prefix 匹配的 parked entry（最长匹配优先，同长取最近
-parked）。命中时的 restore 分两步完成，且失败都退化为常规 admission，不产生新的请求结果：
+parked）。命中时的 restore 分三个阶段升级完成，且任何一步失败都退化为常规 admission，不产生新的请求结果：
 
-1. Swap-into-free-lane：把 image 换回一个 slot-free（空）lane，重建全新 `SequenceState`（fresh
-   `reserve_sequence_kv` + `materialize_sequence_kv` 分配与 parked page 集同形的物理页，staged transfer
-   回填 image，再按 parked 的 frontier/identity/hidden 状态恢复），标记 retained。随后该 lane 与所有
-   resident prefix 一样进入同一 free-lane reuse 选择。
-2. 若 swap 后 `can_admit_lane` 仍不成立（pool pressure），驱逐其他 slot-free lane 上的 retained resident
-   （它们先尝试 park 进 cold tier，再清空 lane），然后重新检查 admission。被驱逐 resident 因此变成
-   新的 parked entry，之后可以对称地 swap 回来。
+1. Swap-into-empty-lane：把 image 换回一个 slot-free 且无 retained state 的 lane，重建全新
+   `SequenceState`（fresh `reserve_sequence_kv` + `materialize_sequence_kv` 分配与 parked page 集同形的
+   物理页，staged transfer 回填 image，再按 parked 的 frontier/identity/hidden/checkpoint 状态恢复），
+   标记 retained。随后该 lane 与所有 resident prefix 一样进入同一 free-lane reuse 选择。
+2. 没有这样的 lane（C>1 多会话语境下，所有 slot-free lane 都持有 retained resident）时，驱逐其中一个
+   slot-free retained resident——它先尝试 park 进 cold tier（变成新的 parked entry，下次自己的请求到达
+   时对称地 swap 回来），然后 image 换入刚腾出的 lane。
+3. 若 swap 后 `can_admit_lane` 仍不成立（pool pressure），继续驱逐其余 slot-free lane 上的 retained
+   resident 并重新检查 admission。
 
 restore 只接受空 lane（lifecycle 为 Empty、未 retained、无 KV），restore 的 allocation 使 lane 不可行时
 按常规 admission 继续。image 的 page 集合、GDN slot 与 hidden row 在 park 与 restore 之间逐字节一致；

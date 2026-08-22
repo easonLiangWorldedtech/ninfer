@@ -889,7 +889,12 @@ std::uint64_t ProgramImplCore::find_parked_prefix(const PreparedPromptData& prom
 
 void ProgramImplCore::restore_parked_prefix(std::uint64_t entry_id, std::uint32_t lane) {
     if (!cold_cache) { throw std::logic_error("cold cache is not enabled"); }
-    cold_cache->restore_parked(entry_id, *this, lane);
+    try {
+        cold_cache->restore_parked(entry_id, *this, lane);
+    } catch (...) {
+        cold_cache->count_restore_failure();
+        throw;
+    }
 }
 
 ColdCacheStats ProgramImplCore::cold_cache_stats() const {
@@ -2255,12 +2260,15 @@ MemorySummary ProgramImplCore::memory_summary() const noexcept {
     out.kv_payload_bytes             = kv_payload_bytes;
     if (cold_cache) {
         const ColdCacheStats stats = cold_cache->stats();
-        out.cold_tier_entry_count         = stats.tier.entry_count;
-        out.cold_tier_arena_count         = stats.tier.arena_count;
-        out.cold_tier_used_bytes          = stats.tier.used_bytes;
-        out.cold_tier_parks               = stats.parks;
-        out.cold_tier_restores            = stats.restores;
-        out.cold_tier_evictions           = stats.tier.evictions;
+        out.cold_tier_entry_count        = stats.tier.entry_count;
+        out.cold_tier_arena_count        = stats.tier.arena_count;
+        out.cold_tier_capacity_bytes     = stats.tier.capacity_bytes;
+        out.cold_tier_used_bytes         = stats.tier.used_bytes;
+        out.cold_tier_parks              = stats.parks;
+        out.cold_tier_restores           = stats.restores;
+        out.cold_tier_evictions          = stats.tier.evictions;
+        out.cold_tier_park_failures      = stats.park_failures;
+        out.cold_tier_restore_failures   = stats.restore_failures;
     }
     return out;
 }

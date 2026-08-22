@@ -254,6 +254,7 @@ ColdTier::Stats ColdTier::stats() const {
     return Stats{
         .arena_count       = arenas_.size(),
         .entry_count       = lru_.size(),
+        .capacity_bytes    = capacity_,
         .used_bytes        = used_,
         .evictions         = evictions_,
         .rejected_oversize = rejected_oversize_,
