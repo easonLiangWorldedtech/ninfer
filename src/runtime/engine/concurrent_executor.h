@@ -55,6 +55,15 @@ public:
             admission_capacity_.main_kv_pages == 0) {
             throw std::logic_error("target admission capacity does not match the Engine");
         }
+        if (options.cold_tier.enabled) {
+            // The cold tier is an optimization: a missing secondary device must
+            // not prevent serving.
+            try {
+                instance_.program->enable_cold_cache(options.cold_tier.device,
+                                                     options.cold_tier.capacity_bytes,
+                                                     options.cold_tier.staging_bytes);
+            } catch (...) { (void)false; }
+        }
         worker_ = std::thread([this] { worker_loop(); });
     }
 
@@ -182,6 +191,13 @@ public:
         out.available_after_startup_bytes      = resolution.available_after_startup_bytes;
         out.kv_capacity_headroom_bytes         = resolution.automatic_headroom_bytes;
         out.planned_slack_bytes                = resolution.planned_slack_bytes;
+        const auto cold                        = instance_.program->cold_cache_stats();
+        out.cold_tier_entry_count              = static_cast<std::uint32_t>(cold.entry_count);
+        out.cold_tier_arena_count              = cold.arena_count;
+        out.cold_tier_used_bytes               = cold.used_bytes;
+        out.cold_tier_parks                    = cold.parks;
+        out.cold_tier_restores                 = cold.restores;
+        out.cold_tier_evictions                = cold.tier_evictions;
         return out;
     }
 
@@ -656,6 +672,72 @@ private:
         publish_runtime_stats();
     }
 
+    // Swaps a parked cold-tier entry into one slot-free lane. The lane must
+    // be empty; on transfer or pool failure the entry stays parked.
+    bool swap_cold_entry_into_lane(const std::shared_ptr<Request>& request,
+                                   std::uint64_t entry_id, std::uint32_t lane) noexcept {
+        try {
+            instance_.program->restore_parked_prefix(entry_id, lane);
+        } catch (...) {
+            return false; // Pool pressure or transfer failure: the normal path decides.
+        }
+        invalidate_lane_plans(lane);
+        return true;
+    }
+
+    [[nodiscard]] bool cold_lane_admits(const std::shared_ptr<Request>& request,
+                                        std::uint32_t lane) noexcept {
+        try {
+            ensure_lane_plan(request, lane);
+        } catch (...) {
+            return false;
+        }
+        return instance_.program->can_admit_lane(lane, *request->lane_plans[lane]);
+    }
+
+    // Attempts to swap a parked cold-tier entry matching the head request back
+    // into a free lane, so normal lane selection observes it as a resident
+    // prefix. When pool pressure blocks admission, other slot-free retained
+    // residents are parked into the tier first, so both conversations swap
+    // state instead of re-prefilling. Never fails the request: on any error
+    // the normal admission path proceeds unchanged.
+    void try_cold_restore(const std::shared_ptr<Request>& request) noexcept {
+        if (!instance_.program->cold_cache_enabled()) { return; }
+        const std::uint64_t entry_id = instance_.program->find_parked_prefix(request->prompt);
+        if (entry_id == 0) { return; }
+
+        std::vector<std::uint32_t> free_lanes;
+        for (std::uint32_t lane = 0; lane < max_concurrency_; ++lane) {
+            if (slots_[lane] == nullptr) { free_lanes.push_back(lane); }
+        }
+        if (free_lanes.empty()) { return; }
+
+        std::optional<std::uint32_t> restored_lane;
+        for (std::uint32_t lane : free_lanes) {
+            if (swap_cold_entry_into_lane(request, entry_id, lane)) {
+                restored_lane = lane;
+                break;
+            }
+        }
+        if (!restored_lane) { return; }
+        if (cold_lane_admits(request, *restored_lane)) {
+            return; // Lane selection below picks up the resident plan.
+        }
+
+        // Pool pressure: park the other slot-free retained residents into the
+        // tier (they swap back when they next arrive) until the restored lane
+        // admits the matching request.
+        for (std::uint32_t victim = 0; victim < max_concurrency_; ++victim) {
+            if (victim == *restored_lane || slots_[victim] != nullptr) { continue; }
+            if (!instance_.program->has_retained_lane(victim)) { continue; }
+            instance_.program->evict_retained_lane(victim);
+            invalidate_lane_plans(victim);
+            if (cold_lane_admits(request, *restored_lane)) {
+                return; // Lane selection below picks up the resident plan.
+            }
+        }
+    }
+
     [[nodiscard]] std::vector<std::shared_ptr<Request>> pending_snapshot() const {
         std::lock_guard lock(queue_mutex_);
         return {pending_.begin(), pending_.end()};
@@ -884,6 +966,7 @@ private:
                 continue;
             }
 
+            try_cold_restore(head);
             std::optional<LaneChoice> head_lane;
             try {
                 head_lane = find_admission_lane(head);

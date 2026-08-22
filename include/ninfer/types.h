@@ -90,6 +90,18 @@ struct EngineOptions {
     bool enable_vision                     = false;
     bool use_cuda_graph                    = true;
     LoadProgress load_progress;
+
+    // Cross-GPU cold state tier. When enabled, evicted retained lanes are
+    // swapped into VRAM arenas on secondary devices and restored when a later
+    // request matches the parked prefix instead of re-prefilling.
+    struct ColdTierOptions {
+        bool enabled               = true;
+        int device                 = -1; // -1 spans every non-primary device.
+        std::size_t capacity_bytes = 0;  // 0: automatic sizing per device.
+        std::size_t staging_bytes  = 64ULL * 1024ULL * 1024ULL;
+    };
+
+    ColdTierOptions cold_tier;
 };
 
 enum class SamplingMode : std::uint8_t {
@@ -432,6 +444,13 @@ struct MemorySummary {
     std::size_t cuda_graph_allowance_bytes        = 0;
     std::size_t cuda_graph_observed_bytes         = 0;
     std::size_t kv_payload_bytes                  = 0;
+    // Cross-GPU cold state tier occupancy and lifetime counters.
+    std::uint32_t cold_tier_entry_count = 0;
+    std::size_t cold_tier_arena_count   = 0;
+    std::size_t cold_tier_used_bytes    = 0;
+    std::uint64_t cold_tier_parks       = 0;
+    std::uint64_t cold_tier_restores    = 0;
+    std::uint64_t cold_tier_evictions   = 0;
 };
 
 // Monotonic execution counters plus one boundary-consistent scheduler snapshot. Consumers derive

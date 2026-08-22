@@ -74,6 +74,8 @@ std::string serve_usage_text(const char* argv0) {
            "[--kv-dtype bf16|int8] [--spec mtp|dflash --draft-tokens N] "
            "[--default-max-tokens N] "
            "[--vision] [--no-cuda-graph] [--no-prefix-reuse] "
+           "[--cold-tier-device N] [--cold-tier-capacity-mib N] "
+           "[--cold-tier-staging-mib N] [--no-cold-tier] "
            "[--lm-head-draft] [--no-thinking] [--preserve-thinking] [--cors] "
            "[--temperature F] [--top-p F] [--top-k N] [--min-p F] [--presence-penalty F] "
            "[--frequency-penalty F] [--seed N] [--greedy]\n"
@@ -95,6 +97,9 @@ std::string serve_usage_text(const char* argv0) {
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
            " MiB of sizing headroom\n"
            "       --no-prefix-reuse disables compatible-prefix caching (enabled by default)\n"
+           "       the cold tier parks evicted retained lanes in secondary-GPU VRAM and restores\n"
+           "       them on prefix match; enabled by default when a secondary device has at least\n"
+           "       512 MiB free; --no-cold-tier disables it\n"
            "       --preserve-thinking retains closed-turn assistant reasoning in later prompts\n"
            "       sampler defaults come from the loaded model and resolved thinking mode; "
            "server flags and request fields override individual values.\n"
@@ -255,6 +260,25 @@ ServeOptions parse_serve_options(int argc, char** argv) {
                 require_value("--frequency-penalty"), "frequency-penalty", -2.0f, 2.0f);
         } else if (arg == "--seed") {
             options.sampling_overrides.seed = parse_u64(require_value("--seed"), "seed");
+        } else if (arg == "--cold-tier-device") {
+            options.cold_tier.device =
+                parse_nonnegative_int(require_value("--cold-tier-device"), "cold-tier-device");
+        } else if (arg == "--cold-tier-capacity-mib") {
+            const std::uint64_t mib = parse_u64(
+                require_value("--cold-tier-capacity-mib"), "cold-tier-capacity-mib");
+            if (mib > std::numeric_limits<std::size_t>::max() / (1ULL << 20)) {
+                throw std::invalid_argument("--cold-tier-capacity-mib is out of range");
+            }
+            options.cold_tier.capacity_bytes = static_cast<std::size_t>(mib << 20);
+        } else if (arg == "--cold-tier-staging-mib") {
+            const std::uint64_t mib =
+                parse_u64(require_value("--cold-tier-staging-mib"), "cold-tier-staging-mib");
+            if (mib == 0 || mib > std::numeric_limits<std::size_t>::max() / (1ULL << 20)) {
+                throw std::invalid_argument("--cold-tier-staging-mib is out of range");
+            }
+            options.cold_tier.staging_bytes = static_cast<std::size_t>(mib << 20);
+        } else if (arg == "--no-cold-tier") {
+            options.cold_tier.enabled = false;
         } else if (arg == "--greedy") {
             options.greedy = true;
         } else {

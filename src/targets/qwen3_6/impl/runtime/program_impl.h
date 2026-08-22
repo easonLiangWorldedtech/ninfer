@@ -1,3 +1,4 @@
+#include "targets/qwen3_6/impl/runtime/cold_state.h"
 #include "targets/qwen3_6/impl/runtime/instance.h"
 #include "targets/qwen3_6/impl/runtime/program.h"
 
@@ -321,7 +322,7 @@ bool ProgramImplCore::can_admit_lane(std::uint32_t lane, const RequestPlan& plan
     }
     const SequenceState& sequence = sequences[lane];
     const auto can_replace        = [](const PagedKVPool& pool, std::uint32_t old_pages,
-                                std::uint32_t new_pages) {
+                                       std::uint32_t new_pages) {
         return old_pages <= pool.entitled_pages() && new_pages <= pool.logical_page_capacity() &&
                new_pages <= pool.page_group_count() - (pool.entitled_pages() - old_pages);
     };
@@ -860,7 +861,40 @@ bool ProgramImplCore::has_retained_lane(std::uint32_t lane) const noexcept {
 
 void ProgramImplCore::evict_retained_lane(std::uint32_t lane) noexcept {
     if (!has_retained_lane(lane)) { return; }
+    if (cold_cache) {
+        try {
+            (void)cold_cache->park_lane(*this, lane);
+        } catch (...) { (void)false; }
+    }
     clear_lane(sequences[lane], requests[lane]);
+}
+
+void ProgramImplCore::enable_cold_cache(const ColdTierConfig& config) {
+    if (cold_cache) { throw std::logic_error("cold cache is already enabled"); }
+    ColdTierConfig tier_config   = config;
+    tier_config.primary_device   = device.device;
+    std::optional<ColdTier> tier = ColdTier::create(tier_config);
+    if (!tier) {
+        throw std::runtime_error("no secondary device arena is available for the cold tier");
+    }
+    cold_cache.emplace(std::move(*tier));
+}
+
+bool ProgramImplCore::cold_cache_enabled() const noexcept { return cold_cache.has_value(); }
+
+std::uint64_t ProgramImplCore::find_parked_prefix(const PreparedPromptData& prompt) const {
+    if (!cold_cache) { return 0; }
+    return cold_cache->find_parked(prompt);
+}
+
+void ProgramImplCore::restore_parked_prefix(std::uint64_t entry_id, std::uint32_t lane) {
+    if (!cold_cache) { throw std::logic_error("cold cache is not enabled"); }
+    cold_cache->restore_parked(entry_id, *this, lane);
+}
+
+ColdStateCache::Stats ProgramImplCore::cold_cache_stats() const {
+    if (!cold_cache) { return {}; }
+    return cold_cache->stats();
 }
 
 GenerationTimings ProgramImplCore::generation_timings_lane(std::uint32_t lane) const noexcept {
@@ -947,9 +981,9 @@ void ProgramImplCore::resize_sequence_kv_entitlement(SequenceState& sequence,
     std::array<PagedKVResize, 2> changes{};
     std::size_t count = 0;
     changes[count++]  = PagedKVResize{
-         .allocation       = &sequence.kv->text,
-         .mapped_pages     = sequence.kv->text.mapped_page_count(),
-         .page_entitlement = text_pages,
+        .allocation       = &sequence.kv->text,
+        .mapped_pages     = sequence.kv->text.mapped_page_count(),
+        .page_entitlement = text_pages,
     };
     if (sequence.kv->backend) {
         changes[count++] = PagedKVResize{
@@ -2126,11 +2160,11 @@ ProgramImplCore::decode_dflash_batch(std::span<const std::uint32_t> lanes,
             }
             sequence.dflash_context_frontier = base_E;
             request.pending                  = PendingCandidate{
-                                 .kind          = PendingKind::Speculative,
-                                 .base_E        = base_E,
-                                 .base_S        = base_S,
-                                 .prompt_tokens = 0,
-                                 .produced      = static_cast<std::uint32_t>(count_i),
+                .kind          = PendingKind::Speculative,
+                .base_E        = base_E,
+                .base_S        = base_S,
+                .prompt_tokens = 0,
+                .produced      = static_cast<std::uint32_t>(count_i),
             };
             request.lifecycle = Lifecycle::Pending;
             request.timings.decode_seconds += seconds;
@@ -2219,6 +2253,15 @@ MemorySummary ProgramImplCore::memory_summary() const noexcept {
     out.cuda_graph_allowance_bytes   = graph_allowance_bytes;
     out.cuda_graph_observed_bytes    = graph_observed_bytes;
     out.kv_payload_bytes             = kv_payload_bytes;
+    if (cold_cache) {
+        const ColdStateCache::Stats stats = cold_cache->stats();
+        out.cold_tier_entry_count         = stats.tier.entry_count;
+        out.cold_tier_arena_count         = stats.tier.arena_count;
+        out.cold_tier_used_bytes          = stats.tier.used_bytes;
+        out.cold_tier_parks               = stats.parks;
+        out.cold_tier_restores            = stats.restores;
+        out.cold_tier_evictions           = stats.tier.evictions;
+    }
     return out;
 }
 

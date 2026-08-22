@@ -101,9 +101,9 @@ Json parse_sse(const std::string& event) {
 }
 
 int test_parse_string_content() {
-    int failures                = 0;
-    const Json body             = {{"model", "qwen3.6-27b"},
-                                   {"messages", Json::array({Json{{"role", "user"}, {"content", "hello"}}})}};
+    int failures    = 0;
+    const Json body = {{"model", "qwen3.6-27b"},
+                       {"messages", Json::array({Json{{"role", "user"}, {"content", "hello"}}})}};
     const GenerationRequest req = parse_chat_completion_request(body, default_limits());
     failures += check(req.model == "qwen3.6-27b", "model parsed");
     failures += check(req.messages.size() == 1, "one message parsed");
@@ -504,13 +504,13 @@ int test_parse_stop_and_max_tokens() {
 }
 
 int test_parse_sampling_carried() {
-    int failures                = 0;
-    const Json body             = {{"model", "m"},
-                                   {"messages", Json::array({Json{{"role", "user"}, {"content", "hi"}}})},
-                                   {"temperature", 0.7},
-                                   {"top_p", 0.9},
-                                   {"seed", 123},
-                                   {"logit_bias", Json{{"5", -1.5}}}};
+    int failures    = 0;
+    const Json body = {{"model", "m"},
+                       {"messages", Json::array({Json{{"role", "user"}, {"content", "hi"}}})},
+                       {"temperature", 0.7},
+                       {"top_p", 0.9},
+                       {"seed", 123},
+                       {"logit_bias", Json{{"5", -1.5}}}};
     const GenerationRequest req = parse_chat_completion_request(body, default_limits());
     failures += check(req.sampling.temperature.has_value() && *req.sampling.temperature == 0.7,
                       "temperature carried");
@@ -533,8 +533,9 @@ int test_parse_sampling_carried() {
 
 int test_response_serialization() {
     int failures = 0;
-    const CompletionUsage usage{10, 3};
-    const Json j = Json::parse(
+    CompletionUsage usage{10, 3};
+    usage.cached_tokens = 4;
+    const Json j        = Json::parse(
         make_chat_completion_response("id-1", "m", 111, "hello world", "", "stop", usage));
     failures += check(j.at("object") == "chat.completion", "response object");
     failures += check(j.at("id") == "id-1", "response id");
@@ -550,6 +551,8 @@ int test_response_serialization() {
     failures += check(j.at("usage").at("prompt_tokens") == 10, "usage prompt_tokens");
     failures += check(j.at("usage").at("completion_tokens") == 3, "usage completion_tokens");
     failures += check(j.at("usage").at("total_tokens") == 13, "usage total_tokens");
+    failures += check(j.at("usage").at("prompt_tokens_details").at("cached_tokens") == 4,
+                      "usage prompt_tokens_details.cached_tokens");
 
     // Non-empty reasoning is attached as message.reasoning_content, content stays answer-only.
     const Json jr = Json::parse(make_chat_completion_response("id-2", "m", 111, "the answer",
@@ -632,13 +635,16 @@ int test_chunk_serialization() {
     failures += check(!final_no_usage.contains("usage"), "no usage key when include_usage=false");
 
     // Dedicated usage chunk: empty choices, populated usage.
-    const CompletionUsage usage{2, 5};
+    CompletionUsage usage{2, 5};
+    usage.cached_tokens    = 1;
     const Json usage_chunk = parse_sse(make_chat_chunk_usage("id", "m", 1, usage));
     failures += check(usage_chunk.at("choices").is_array() && usage_chunk.at("choices").empty(),
                       "usage chunk has empty choices");
     failures +=
         check(usage_chunk.at("usage").at("prompt_tokens") == 2, "usage chunk prompt_tokens");
     failures += check(usage_chunk.at("usage").at("total_tokens") == 7, "usage chunk total");
+    failures += check(usage_chunk.at("usage").at("prompt_tokens_details").at("cached_tokens") == 1,
+                      "usage chunk cached_tokens");
 
     failures += check(sse_done() == "data: [DONE]\n\n", "done sentinel");
     return failures;

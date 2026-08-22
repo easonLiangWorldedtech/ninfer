@@ -16,6 +16,7 @@ endfunction()
 # Device/tensor/layout/graph primitives and the model-independent request runtime.
 add_library(ninfer_core STATIC
   core/arena.cu
+  core/cold_tier.cpp
   core/device.cu
   core/dtype.cpp
   core/host_worker_pool.cpp

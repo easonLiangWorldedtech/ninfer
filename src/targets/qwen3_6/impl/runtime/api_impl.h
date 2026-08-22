@@ -1,3 +1,4 @@
+#include "targets/qwen3_6/impl/runtime/cold_state.h"
 #include "targets/qwen3_6/impl/runtime/instance.h"
 
 #include <ninfer/targets/qwen3_6/prepared_prompt.h>
@@ -199,6 +200,46 @@ bool Program<Variant>::has_retained_lane(std::uint32_t lane) const noexcept {
 template <>
 void Program<Variant>::evict_retained_lane(std::uint32_t lane) noexcept {
     impl_->evict_retained_lane(lane);
+}
+
+template <>
+void Program<Variant>::enable_cold_cache(int device, std::size_t capacity_bytes,
+                                         std::size_t staging_bytes) {
+    impl_->enable_cold_cache(ColdTierConfig{
+        .device         = device,
+        .capacity_bytes = capacity_bytes,
+        .min_capacity   = 512ULL * 1024ULL * 1024ULL,
+        .staging_bytes  = staging_bytes,
+    });
+}
+
+template <>
+bool Program<Variant>::cold_cache_enabled() const noexcept {
+    return impl_->cold_cache_enabled();
+}
+
+template <>
+std::uint64_t Program<Variant>::find_parked_prefix(const PreparedPrompt& prompt) const {
+    return impl_->find_parked_prefix(PreparedPromptAccess::view(prompt));
+}
+
+template <>
+void Program<Variant>::restore_parked_prefix(std::uint64_t entry_id, std::uint32_t lane) {
+    impl_->restore_parked_prefix(entry_id, lane);
+}
+
+template <>
+Program<Variant>::ColdCacheStats Program<Variant>::cold_cache_stats() const {
+    const detail::NINFER_QWEN36_RUNTIME_NS::ColdStateCache::Stats stats = impl_->cold_cache_stats();
+    return ColdCacheStats{
+        .parks          = stats.parks,
+        .restores       = stats.restores,
+        .park_failures  = stats.park_failures,
+        .entry_count    = stats.tier.entry_count,
+        .arena_count    = stats.tier.arena_count,
+        .used_bytes     = stats.tier.used_bytes,
+        .tier_evictions = stats.tier.evictions,
+    };
 }
 
 template <>

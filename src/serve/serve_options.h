@@ -40,6 +40,10 @@ struct ServeOptions {
     std::size_t response_store_max_records = kDefaultResponseStoreRecords;
     std::size_t response_store_max_bytes   = kDefaultResponseStoreBytes;
     int device                             = 0;
+    // Cross-GPU cold state tier (evicted retained lanes swapped to secondary
+    // device VRAM and restored on prefix match). Enabled by default;
+    // --no-cold-tier opts out, --cold-tier-device pins one device.
+    EngineOptions::ColdTierOptions cold_tier;
     KvCacheStorage kv_cache                = KvCacheStorage::BFloat16;
     SpeculativeOptions speculative;
     bool enable_vision      = false;

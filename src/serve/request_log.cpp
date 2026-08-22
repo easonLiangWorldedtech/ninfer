@@ -484,7 +484,11 @@ std::string format_server_start_json(
           {"prefix_reuse", options.allow_prefix_reuse},
           {"speculative_backend", product::speculative_backend_name(options.speculative.backend)},
           {"speculative_draft_window", options.speculative.draft_tokens},
-          {"proposal_head", proposal_head_name(options.speculative.proposal_head)}};
+          {"proposal_head", proposal_head_name(options.speculative.proposal_head)},
+          {"cold_tier_enabled", options.cold_tier.enabled},
+          {"cold_tier_device", options.cold_tier.device},
+          {"cold_tier_capacity_bytes", options.cold_tier.capacity_bytes},
+          {"cold_tier_staging_bytes", options.cold_tier.staging_bytes}};
     record["sampling_defaults"] =
         Json{{"thinking", preset_json(sampling_defaults.thinking)},
              {"non_thinking", preset_json(sampling_defaults.non_thinking)},
@@ -505,7 +509,13 @@ std::string format_server_start_json(
              {"planned_slack_bytes", memory.planned_slack_bytes},
              {"cuda_graph_allowance_bytes", memory.cuda_graph_allowance_bytes},
              {"cuda_graph_observed_bytes", memory.cuda_graph_observed_bytes},
-             {"kv_payload_bytes", memory.kv_payload_bytes}};
+             {"kv_payload_bytes", memory.kv_payload_bytes},
+             {"cold_tier_entry_count", memory.cold_tier_entry_count},
+             {"cold_tier_arena_count", memory.cold_tier_arena_count},
+             {"cold_tier_used_bytes", memory.cold_tier_used_bytes},
+             {"cold_tier_parks", memory.cold_tier_parks},
+             {"cold_tier_restores", memory.cold_tier_restores},
+             {"cold_tier_evictions", memory.cold_tier_evictions}};
     record["environment"] =
         Json{{"device", environment.device},
              {"gpu_name", environment.gpu_name},

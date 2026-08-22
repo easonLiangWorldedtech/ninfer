@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <exception>
@@ -398,7 +399,9 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                 return req.is_connection_alive && !req.is_connection_alive();
             });
             log_request_done(log_context, outcome);
-            const CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens};
+            CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens};
+            usage.cached_tokens = std::clamp(static_cast<int>(outcome.metrics.prefix_cache_hit_tokens), 0,
+                                             outcome.prompt_tokens);
             std::string response_body;
             if (!outcome.tool_calls.empty()) {
                 response_body = make_chat_completion_tool_response(
@@ -483,7 +486,9 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                                               include_usage));
                 }
                 if (include_usage) {
-                    const CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens};
+                    CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens};
+                    usage.cached_tokens = std::clamp(static_cast<int>(outcome.metrics.prefix_cache_hit_tokens), 0,
+                                                     outcome.prompt_tokens);
                     write_stream_item(sink, *stream,
                                       make_chat_chunk_usage(id, model, created, usage));
                 }

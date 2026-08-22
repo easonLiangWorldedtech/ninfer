@@ -174,6 +174,27 @@ public:
     [[nodiscard]] GenerationTimings generation_timings_lane(std::uint32_t lane) const noexcept;
     [[nodiscard]] SpeculativeStats speculative_stats_lane(std::uint32_t lane) const noexcept;
 
+    // Cross-GPU cold state tier: evicted retained lanes are swapped into
+    // secondary-device VRAM arenas and restored when a later request matches
+    // the parked prefix. device -1 spans every non-primary device; zero
+    // capacity selects automatic sizing.
+    void enable_cold_cache(int device, std::size_t capacity_bytes, std::size_t staging_bytes);
+    [[nodiscard]] bool cold_cache_enabled() const noexcept;
+    [[nodiscard]] std::uint64_t find_parked_prefix(const PreparedPrompt& prompt) const;
+    void restore_parked_prefix(std::uint64_t entry_id, std::uint32_t lane);
+
+    struct ColdCacheStats {
+        std::uint64_t parks         = 0;
+        std::uint64_t restores      = 0;
+        std::uint64_t park_failures = 0;
+        std::size_t entry_count     = 0;
+        std::size_t arena_count     = 0;
+        std::size_t used_bytes      = 0;
+        std::size_t tier_evictions  = 0;
+    };
+
+    [[nodiscard]] ColdCacheStats cold_cache_stats() const;
+
     [[nodiscard]] MemorySummary memory_summary() const noexcept;
     void reset_memory_peaks() noexcept;
 

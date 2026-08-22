@@ -114,6 +114,20 @@ Streaming begins with an assistant-role chunk, sends separate reasoning and cont
 finish-reason chunk and `[DONE]`. When `stream_options.include_usage` is true, a final empty
 `choices` chunk contains completed usage.
 
+Usage reports the exact resident prompt prefix reused by the Engine as
+`prompt_tokens_details.cached_tokens`; `prompt_tokens` still counts the full prepared prompt:
+
+```json
+{
+  "usage": {
+    "prompt_tokens": 42,
+    "prompt_tokens_details": {"cached_tokens": 17},
+    "completion_tokens": 12,
+    "total_tokens": 54
+  }
+}
+```
+
 ### Multimodal request
 
 Start the server with `--vision` before sending media:

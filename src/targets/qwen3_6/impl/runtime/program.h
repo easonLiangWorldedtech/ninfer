@@ -31,6 +31,10 @@ using RewriteCheckpointSpec = qwen3_6::RewriteCheckpointSpec;
 
 using ReusePath = ninfer::PrefixReusePath;
 
+// Defined in cold_state.h; included by every translation unit that instantiates
+// its members (program_impl.h, api_impl.h, cold_state.cpp).
+class ColdStateCache;
+
 [[nodiscard]] constexpr bool is_rewrite_checkpoint_restore(ReusePath path) noexcept {
     return path == ReusePath::RestoreTurnCheckpoint || path == ReusePath::RestoreResponseCheckpoint;
 }
@@ -235,6 +239,14 @@ public:
     [[nodiscard]] GenerationTimings generation_timings_lane(std::uint32_t lane) const noexcept;
     [[nodiscard]] SpeculativeStats speculative_stats_lane(std::uint32_t lane) const noexcept;
 
+    // Cross-GPU cold state tier: evicted retained lanes are swapped into the
+    // secondary-device arena set and matched/restored on later requests.
+    void enable_cold_cache(const ColdTierConfig& config);
+    [[nodiscard]] bool cold_cache_enabled() const noexcept;
+    [[nodiscard]] std::uint64_t find_parked_prefix(const PreparedPromptData& prompt) const;
+    void restore_parked_prefix(std::uint64_t entry_id, std::uint32_t lane);
+    [[nodiscard]] ColdStateCache::Stats cold_cache_stats() const;
+
     [[nodiscard]] MemorySummary memory_summary() const noexcept;
 
     void reset_memory_peaks() noexcept;
@@ -273,6 +285,8 @@ public:
     std::array<SequenceState, kMaximumConcurrency> sequences;
     std::array<RequestControl, kMaximumConcurrency> requests;
 
+    std::optional<ColdStateCache> cold_cache;
+
     DecodeGraphFamily ordinary_graphs;
     DecodeGraphFamily mtp_graphs;
     DecodeGraphFamily dflash_graphs;
@@ -292,6 +306,8 @@ public:
     std::size_t workspace_logical_peak_bytes = 0;
 
 private:
+    friend class ColdStateCache;
+
     void clear_lane(SequenceState& sequence, RequestControl& request) noexcept;
     void ordered_reset(SequenceState& sequence);
     void prepare_graphs();
