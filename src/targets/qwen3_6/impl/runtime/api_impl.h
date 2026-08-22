@@ -230,7 +230,7 @@ void Program<Variant>::restore_parked_prefix(std::uint64_t entry_id, std::uint32
 
 template <>
 Program<Variant>::ColdCacheStats Program<Variant>::cold_cache_stats() const {
-    const detail::NINFER_QWEN36_RUNTIME_NS::ColdStateCache::Stats stats = impl_->cold_cache_stats();
+    const detail::NINFER_QWEN36_RUNTIME_NS::ColdCacheStats stats = impl_->cold_cache_stats();
     return ColdCacheStats{
         .parks          = stats.parks,
         .restores       = stats.restores,

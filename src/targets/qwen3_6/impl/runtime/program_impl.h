@@ -877,10 +877,10 @@ void ProgramImplCore::enable_cold_cache(const ColdTierConfig& config) {
     if (!tier) {
         throw std::runtime_error("no secondary device arena is available for the cold tier");
     }
-    cold_cache.emplace(std::move(*tier));
+    cold_cache = std::make_unique<ColdStateCache>(std::move(*tier));
 }
 
-bool ProgramImplCore::cold_cache_enabled() const noexcept { return cold_cache.has_value(); }
+bool ProgramImplCore::cold_cache_enabled() const noexcept { return cold_cache != nullptr; }
 
 std::uint64_t ProgramImplCore::find_parked_prefix(const PreparedPromptData& prompt) const {
     if (!cold_cache) { return 0; }
@@ -892,7 +892,7 @@ void ProgramImplCore::restore_parked_prefix(std::uint64_t entry_id, std::uint32_
     cold_cache->restore_parked(entry_id, *this, lane);
 }
 
-ColdStateCache::Stats ProgramImplCore::cold_cache_stats() const {
+ColdCacheStats ProgramImplCore::cold_cache_stats() const {
     if (!cold_cache) { return {}; }
     return cold_cache->stats();
 }
@@ -2254,7 +2254,7 @@ MemorySummary ProgramImplCore::memory_summary() const noexcept {
     out.cuda_graph_observed_bytes    = graph_observed_bytes;
     out.kv_payload_bytes             = kv_payload_bytes;
     if (cold_cache) {
-        const ColdStateCache::Stats stats = cold_cache->stats();
+        const ColdCacheStats stats = cold_cache->stats();
         out.cold_tier_entry_count         = stats.tier.entry_count;
         out.cold_tier_arena_count         = stats.tier.arena_count;
         out.cold_tier_used_bytes          = stats.tier.used_bytes;

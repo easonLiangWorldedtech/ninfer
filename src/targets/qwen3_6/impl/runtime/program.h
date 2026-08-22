@@ -23,6 +23,13 @@
 #include <span>
 #include <vector>
 
+namespace ninfer {
+// Defined in core/cold_tier.h; program.h names it only in a reference
+// position. Every translation unit that enables or observes the cold cache
+// (program_impl.h, api_impl.h, cold_state.cpp) includes the definition.
+struct ColdTierConfig;
+} // namespace ninfer
+
 namespace ninfer::targets::qwen3_6::detail::NINFER_QWEN36_RUNTIME_NS {
 
 using PreparedPromptData    = qwen3_6::PreparedPromptData;
@@ -31,9 +38,11 @@ using RewriteCheckpointSpec = qwen3_6::RewriteCheckpointSpec;
 
 using ReusePath = ninfer::PrefixReusePath;
 
-// Defined in cold_state.h; included by every translation unit that instantiates
-// its members (program_impl.h, api_impl.h, cold_state.cpp).
+// Defined in cold_state.h, which carries the complete inline definition and
+// may only be parsed from an exact-variant translation unit (program_impl.h
+// and api_impl.h include it; both are pulled in by instantiate.h).
 class ColdStateCache;
+struct ColdCacheStats;
 
 [[nodiscard]] constexpr bool is_rewrite_checkpoint_restore(ReusePath path) noexcept {
     return path == ReusePath::RestoreTurnCheckpoint || path == ReusePath::RestoreResponseCheckpoint;
@@ -245,7 +254,7 @@ public:
     [[nodiscard]] bool cold_cache_enabled() const noexcept;
     [[nodiscard]] std::uint64_t find_parked_prefix(const PreparedPromptData& prompt) const;
     void restore_parked_prefix(std::uint64_t entry_id, std::uint32_t lane);
-    [[nodiscard]] ColdStateCache::Stats cold_cache_stats() const;
+    [[nodiscard]] ColdCacheStats cold_cache_stats() const;
 
     [[nodiscard]] MemorySummary memory_summary() const noexcept;
 
@@ -285,7 +294,10 @@ public:
     std::array<SequenceState, kMaximumConcurrency> sequences;
     std::array<RequestControl, kMaximumConcurrency> requests;
 
-    std::optional<ColdStateCache> cold_cache;
+    // unique_ptr so the incomplete forward declaration above suffices; the
+    // destructor is instantiated in program_impl.h where cold_state.h defines
+    // the type.
+    std::unique_ptr<ColdStateCache> cold_cache;
 
     DecodeGraphFamily ordinary_graphs;
     DecodeGraphFamily mtp_graphs;

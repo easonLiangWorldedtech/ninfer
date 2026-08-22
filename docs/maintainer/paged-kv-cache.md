@@ -450,7 +450,10 @@ needed pages     = 1024
 pages 映射到 A 的旧 pages，再从尾部取得 256 pages，因此无需搬移 B。
 
 Retained allocation 持有的 pages 不是 free capacity。若 retained A 阻塞 active admission，Prefix Cache
-先 eviction A；这是 occupancy 回收，不是 compaction。
+先 eviction A；这是 occupancy 回收，不是 compaction。启用 cold state tier 时，eviction 可以附带一次
+best-effort 序列化：A 的 mapped pages（连同 target 定义的 continuation state）被拷贝进 secondary
+device 的 VRAM arena，然后照常回收。拷贝不搬移任何 pool page，A 的 page IDs 随即失效并回到 free set；
+invariant 11 不受影响。序列化失败则直接按无 cold tier 路径回收。
 
 唯一的 payload slack 是每个 pool allocation 的最后一个未填满 page，最多 `P-1` positions。对于
 `P=64`，8 个 active allocations 在一个 pool 中的最大尾页 slack 为：
@@ -672,7 +675,10 @@ ordinary target progress，不构成 backend capability 降级，也不能据此
 完整、可继续的 bundle 一起 retain，要么释放整个 bundle。
 
 Admission 被 retained occupancy 阻塞时，Prefix Cache 选择并释放完整 retained entries，再重新执行
-atomic admission。KV Store 不自行选择 eviction victim。
+atomic admission。KV Store 不自行选择 eviction victim。启用 cold state tier 时，被释放的 retained
+entries 先尝试 park（§10.4）；而一个前缀匹配 parked image 的 waiting request 可以在常规
+free-lane reuse 之前把 image 换回一个空 lane——restore 执行 fresh `reserve_sequence_kv` +
+`materialize_sequence_kv`，分配的是**新** page IDs，与 parked image 原来的 page IDs 无关。
 
 ---
 
@@ -800,6 +806,28 @@ pages 返回各自 pool；随后各 pool 的 exact frontier 和 fixed continuati
 连同 Linear Attention/backend state branching 一起重新设计；仅共享 Main Text pages 不能形成完整
 可继续的 sequence state。
 
+### 10.4 Cold tier park and restore
+
+Cold tier 在 retained eviction 与 admission 之间加一条可选的 image 通道。它不改变 KV Store 的 page
+所有权规则，只消费已经完整 retain 的 bundle：
+
+- **Park**：Prefix Cache eviction 一个 free-lane retained bundle 时，target 把该 lane 的完整 mapped
+  page 集合（每个 pool 的每个 mapped page，按 page stride 切出）连同 target 定义的 fixed state slots
+  和 hidden rows 序列化成一份 image，写入 cold tier arena。Image 的 page 切片与 KV Store 的 physical
+  page bytes 逐字节一致；写入后原 page IDs 照常失效并回到 free set，KV Store 对此无感知。
+- **Restore**：admission 找到 full-ledger prefix 匹配的 parked image 时，在空 lane 上执行 fresh
+  `reserve_sequence_kv` + `materialize_sequence_kv`（分配新的 page IDs、物化与 parked 相同数目的
+  pages），把 image 写回这些新 pages，重建 `SequenceState` 并标记 retained。之后该 bundle 与所有
+  本地 retained bundle 一样进入 §9.1 的 claim 路径；§10.3 的 exclusive ownership 在 restore 完成时
+  重新建立（arena 中的 image 在 restore 成功时释放，不再可 claim）。
+- **Span 一致性**：park 与 restore 对同一 lane state 使用同一个 span 收集函数，且 fixed state slot
+  （GDN current / rewrite-checkpoint slot）与 hidden rows 的包含条件（`rewrite_checkpoint.valid`、
+  `tail_hidden_valid`）在两端求值相同，因此 image round-trip 是逐字节恒等。
+- **失败语义**：park 失败 = 无 cold tier 的普通 eviction；restore 失败 = 普通 admission。Cold tier
+  不产生 KV Store 可见的中间状态。
+- **Arena 回收**：arena LRU 淘汰 image 只删除 image 与其 host metadata；不触达任何 pool。被淘汰
+  的 prefix 之后按 uncached prompt work 处理。
+
 ---
 
 ## 11. Speculative decoding
@@ -903,7 +931,9 @@ fixed unit；new admission 可以 claim 或先驱逐 retained entry，不能降�
 19. DFlash local 与 boundary-local 分别拥有 §12.1 的完整 fixed cyclic payload；absolute position 只通过
     `p mod 4096` 选择 physical slot，两者不共享可写 backing storage；
 20. MTP Vision prefill，以及任一 selected backend 下的 prefix reuse 和 ordinary tail round，都不得把
-    sequence 降级为缺少该 backend continuation state。
+    sequence 降级为缺少该 backend continuation state；
+21. cold tier image 不持有 page-group ID、不进入任何 pool mapping 或 execution view；parked image 的
+    restore 只产生 fresh allocation，且 restore 与 park 对同一 lane state 的 span 集合逐字节一致。
 
 ---
 
@@ -921,6 +951,9 @@ fixed unit；new admission 可以 claim 或先驱逐 retained entry，不能降�
 | 只有更短 token prefix match，但该位置没有 checkpoint | cache miss |
 | retained occupancy 阻塞 admission | Prefix Cache eviction 完整 entry 后重试 atomic admission |
 | retained eviction 后，request set 满足 main contract 但 backend reservation 失败 | startup sizing 或 accounting invariant violation；不是正常等待条件 |
+| cold tier park 失败（arena 满、lane 不可 park 或传输错误） | 普通 eviction；image 丢弃，无 KV Store 可见状态 |
+| parked image 被 arena LRU 回收 | 该 prefix 之后按 uncached prompt work 处理 |
+| restore 时 lane 不可行或 image 尺寸不一致 | 回滚 fresh allocation，按普通 admission 继续 |
 | request cancellation | in-flight unit 完成后的 boundary release bundle |
 | admitted request materialize 时无 free page | reservation-accounting violation，作为 Engine failure |
 | 一个 request 使用 main pool 大部分容量 | 合法，只要其他 per-pool entitlements 仍满足 invariants |

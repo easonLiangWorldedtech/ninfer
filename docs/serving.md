@@ -492,6 +492,10 @@ curl http://127.0.0.1:8080/v1/models \
 | `--vision` | enable media input and load Vision GPU allocations | off |
 | `--no-cuda-graph` | disable CUDA Graph decode | graphs on |
 | `--no-prefix-reuse` | disable compatible-prefix caching | prefix reuse on |
+| `--cold-tier-device N` | pin the cold tier to one secondary device; `-1` spans every non-primary device with at least 512 MiB free | `-1` |
+| `--cold-tier-capacity-mib N` | per-device cold-tier arena bytes; `0` sizes each arena from device free memory minus 256 MiB | `0` |
+| `--cold-tier-staging-mib N` | pinned host staging buffer for cold-tier transfers | `64` |
+| `--no-cold-tier` | disable the cross-GPU cold tier | cold tier on |
 | `--no-thinking` | disable thinking by default | thinking on |
 | `--preserve-thinking` | preserve closed-turn assistant reasoning by default | off |
 | `--cors` | permissive browser CORS headers | off |
@@ -512,6 +516,23 @@ Frequency penalty is `0` for all registered presets. Process flags override regi
 request fields override process flags, and `--greedy` finally forces temperature `0`.
 
 Run `./build/apps/ninfer-serve --help` for the exact option contract.
+
+## Cross-GPU cold tier
+
+With more than one GPU present, the server keeps evicted retained prefixes in a VRAM cold
+tier on the secondary devices instead of dropping them. When a retained lane is evicted for
+admission, its serialized state image (paged KV pages, MTP backend KV, GDN slots, tail and
+rewrite-checkpoint hidden rows) is swapped through pinned host memory into LRU arenas on the
+secondary devices. When a later request presents the same prefix, the image is swapped back
+into a freshly materialized allocation before lane selection, so the request resumes from the
+parked frontier through the normal prefix-reuse path instead of re-prefilling. Under pool
+pressure the admission pass parks other slot-free retained residents into the tier first, so
+multiple concurrent conversations swap state rather than evicting each other to a full reset.
+
+The tier is best-effort: a missing secondary device, an oversize image, or a failed transfer
+falls back to the normal admission path without failing the request. It changes neither the
+FIFO admission order nor the reuse paths a request can take. The request log records
+`cold_tier_parks`, `cold_tier_restores`, `cold_tier_evictions`, and arena occupancy.
 
 ## Structured request log
 

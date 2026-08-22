@@ -114,9 +114,9 @@ private:
 // sum to the same total; the transfer is chunked by staging_bytes. The
 // ambient CUDA device is restored on return. Throws on size or CUDA errors.
 void staged_span_transfer(int src_device, cudaStream_t src_stream,
-                          std::span<const const void*> src_ptrs,
+                          std::span<const void* const> src_ptrs,
                           std::span<const std::size_t> src_sizes, int dst_device,
-                          cudaStream_t dst_stream, std::span<const void*> dst_ptrs,
+                          cudaStream_t dst_stream, std::span<void*> dst_ptrs,
                           std::span<const std::size_t> dst_sizes, void* staging,
                           std::size_t staging_bytes);
 

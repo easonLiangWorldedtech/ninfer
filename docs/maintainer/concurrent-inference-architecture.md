@@ -24,13 +24,16 @@ model execution：一次 model traversal、一次 CUDA Graph replay 和一组 ba
 - ordinary decoding 与 engine-wide speculative decoding；
 - streaming 与 non-streaming output；
 - prefix reuse；
-- 不同 prompt length、context length、generation limit 和 sampling configuration。
+- 不同 prompt length、context length、generation limit 和 sampling configuration；
+- 可选的 cross-GPU cold state tier：被驱逐的 retained prefix 可以换出到 secondary device
+  的 VRAM arena，之后按 parked frontier 恢复，而不必重新 prefill（§5.4、§6.4）。
 
 ### 1.2 Non-goals
 
 - request preemption、swap 或 pause/resume；
 - 多请求 batched prefill 或 prefill/decode mixed forward；
-- 多 GPU 或 distributed inference；
+- 多 GPU 执行或 distributed inference（secondary device 只允许作为 cold state tier 的
+  存储，不承担任何 model execution）；
 - priority、tenant QoS 或 deadline-aware GPU scheduling；
 - 面向数十至数百请求的通用 continuous batching；
 - serving 期间为新 shape 动态捕获 CUDA Graph。
@@ -276,6 +279,12 @@ workspace 或 graph。当前 fixed-state backing 是 lane-affine 的：retained 
 capacity 时可以先驱逐其他 free lanes 上的 retained state。新 request 的 sampling、RNG、stop 和 output
 state 始终重新创建。
 
+Cold state tier 是这个 lane-affine 存储规则的唯一例外：free lane 上的 retained state 被驱逐时，它的完整
+state image 可以被序列化换出到 secondary device 的 VRAM arena（cold tier）；之后某个前缀相同的 request
+可以把该 image 换回一个空 lane，重建全新的 SequenceState，再进入 §6.4 的 free-lane reuse 流程。Cold
+tier 从不持有 active request 的 state，从不写回 occupied lane，secondary device 不承担任何 model
+execution。
+
 Qwen3.6 的 lane 是 Linear Attention state 的唯一 locator。`C=max_concurrency` 时，shared pool 固定使用
 `[0,C)` 作为各 lane 的 current committed state，使用 `[C,2C)` 作为各 lane 的 rewrite-checkpoint
 state；一份 slot 同时选择全部 GDN layers 的 convolution history 和 recurrent state。Decode round
@@ -471,6 +480,12 @@ admission 的完整 entitlement；不为 `H` pin matching lane/checkpoint。Incu
 产生的 retained state，在 active admission 需要时必须于同一 boundary 按 active-priority 语义驱逐，因此
 可以把其完整 active entitlement 视为可释放。不可驱逐的 engine-fixed occupancy 属于 `K` 之外的 baseline，
 不能伪装成 donor release。
+
+启用 cold state tier 时，驱逐动作可以附带一次 best-effort 换出：被驱逐 lane 的完整 state image 先序列化
+进 secondary device 的 VRAM arena，随后才释放 lane。换出失败不改变驱逐语义（lane 照常清空，image 丢弃）。
+arena 自身按 LRU 回收 image；被 arena 回收的 image 只是 prefix reuse 候选消失，对任何 admission 可行性
+判断没有影响——cold tier 既不增加也不减少 §5.2 的 entitlement 账目，它只改变驱逐后同一 prefix 再次
+admission 时的 uncached prompt work 预期（§5.5 的 service projection 可以按此保守缩短）。
 
 ### 5.5 Service projection and bounded temporal borrowing
 
@@ -737,9 +752,43 @@ reservation。Active admission 优先；cache occupancy 阻塞原本可行的 re
 retained entries。Planner 不复制或迁移 retained physical state，而是在 free lanes 中选择最大合法 reuse。
 只有在 slot/lane 和完整 entitlement 都已满足后才能 claim cache ownership。
 
+启用 cold state tier 后，prefix lookup 多一个候选来源：parked image 表。Admission 在常规 free-lane
+reuse 判断之前，先查询与当前 prompt 的完整 ledger prefix 匹配的 parked entry（最长匹配优先，同长取最近
+parked）。命中时的 restore 分两步完成，且失败都退化为常规 admission，不产生新的请求结果：
+
+1. Swap-into-free-lane：把 image 换回一个 slot-free（空）lane，重建全新 `SequenceState`（fresh
+   `reserve_sequence_kv` + `materialize_sequence_kv` 分配与 parked page 集同形的物理页，staged transfer
+   回填 image，再按 parked 的 frontier/identity/hidden 状态恢复），标记 retained。随后该 lane 与所有
+   resident prefix 一样进入同一 free-lane reuse 选择。
+2. 若 swap 后 `can_admit_lane` 仍不成立（pool pressure），驱逐其他 slot-free lane 上的 retained resident
+   （它们先尝试 park 进 cold tier，再清空 lane），然后重新检查 admission。被驱逐 resident 因此变成
+   新的 parked entry，之后可以对称地 swap 回来。
+
+restore 只接受空 lane（lifecycle 为 Empty、未 retained、无 KV），restore 的 allocation 使 lane 不可行时
+按常规 admission 继续。image 的 page 集合、GDN slot 与 hidden row 在 park 与 restore 之间逐字节一致；
+DFlash lane 不可 park；MTP backend 要求 `mtp_kv_valid + 1 >= execution_frontier` 才可 park。
+
 Prefix lookup 只改变 uncached prompt work 和 prospective reuse plan，不自行授予 queue priority。它可以保守地
 缩短 §5.5 的 service projection，但仍须通过相同 protected-head qualification；无论是否命中，最终 active
 request 都进入相同 prefill/decode schedule 和 compact batch formation。
+
+### 6.5 Cross-GPU cold state tier
+
+Cold state tier 把 §5.4 驱逐产生的 state image 从"丢弃"变成"换出"。它是本文 lane-affine 与 no-move
+规则下的受控存储层，不是第二个 execution target：
+
+- **Ownership**：image 由 target 的 `ColdStateCache` 持有，底层 arena 由 `core` 的 `ColdTier` 持有。
+  Arena 只分配/回收 VRAM slab 与 host-side metadata；它不理解 token、ledger 或 frontier。
+- **Device**：primary device 是 resident model execution 所在设备，永远不作为 arena device。Arena 覆盖
+  启动时 free VRAM 达到下限的所有非 primary device；每设备 arena 容量默认为 free − 256 MiB。
+- **Transfer**：image 经 pinned host staging buffer 分块传输，不假设 device 间 P2P。Staging 大小与
+  设备集合均为启动期配置，运行期不变。
+- **Recycle**：所有 arena 共用一个 LRU；arena 容量不足时 LRU 淘汰 image（计入 tier evictions），
+  淘汰不触发任何 lane 或 request 动作。
+- **Failure**：park 与 restore 都是 best-effort。任何一步失败，request 走常规 admission，lane 状态回滚
+  到驱逐前语义；cold tier 不引入新的请求失败模式。
+- **Invariants**：secondary device 无 model execution、无 CUDA Graph、无权重；image 不含 active request
+  state；park/restore 的 span 集合对同一 lane state 逐字节一致；restore 只写入空 lane。
 
 ---
 
